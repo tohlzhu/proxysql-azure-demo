@@ -1,0 +1,15 @@
+.git
+.env
+.local
+.venv
+artifacts
+**/__pycache__
+**/.pytest_cache
+**/.ruff_cache
+**/.terraform
+**/*.tfstate*
+**/*.tfvars
+**/tfplan*
+**/*.pem
+**/*.key
+**/*.egg-info

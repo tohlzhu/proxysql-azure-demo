@@ -1,0 +1,10 @@
+variable "name" { type = string }
+variable "resource_group_name" { type = string }
+variable "location" { type = string }
+variable "tags" { type = map(string) }
+variable "subnet_id" { type = string }
+variable "redis_subnet_id" { type = string }
+variable "node_vm_size" { type = string }
+variable "redis_vm_size" { type = string }
+variable "node_zones" { type = list(string) }
+variable "ssh_public_key" { type = string }
