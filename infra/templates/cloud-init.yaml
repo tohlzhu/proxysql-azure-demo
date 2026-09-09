@@ -1,0 +1,23 @@
+#cloud-config
+# Versioned bootstrap only: application code and credentials arrive separately.
+write_files:
+  - path: /usr/local/sbin/demo-bootstrap
+    owner: root:root
+    permissions: '0755'
+    content: |
+      #!/usr/bin/env bash
+      set -euo pipefail
+      export DEBIAN_FRONTEND=noninteractive
+      for attempt in $(seq 1 30); do
+        if apt-get update -qq && apt-get install -y -qq docker.io docker-compose-v2 ca-certificates python3 openssl; then
+          systemctl enable --now docker
+          install -d -m 0700 /opt/proxysql-demo
+          touch /opt/proxysql-demo/.bootstrap-ready
+          exit 0
+        fi
+        sleep 20
+      done
+      echo "Bootstrap failed: verify explicit Load Balancer egress and DNS." >&2
+      exit 1
+runcmd:
+  - [bash, /usr/local/sbin/demo-bootstrap]

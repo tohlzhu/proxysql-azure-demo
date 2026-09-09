@@ -1,0 +1,7 @@
+limits:
+  qps_demo:
+    rate_per_second: 10
+    burst: 5
+  concurrency_demo:
+    max_concurrency: 3
+    queue_timeout_ms: 500

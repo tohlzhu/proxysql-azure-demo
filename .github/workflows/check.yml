@@ -1,0 +1,41 @@
+name: Local demo checks
+
+on:
+  push:
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  demo:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: make install
+      - run: make lint
+      - run: make demo-local
+      - run: AZURE_COMPOSE_TLS_TEST=1 make test
+      - run: make test-demo
+      - run: .venv/bin/python -m playwright install --with-deps chromium
+      - run: make test-web
+      - name: Stop this job's local resources
+        if: always()
+        run: |
+          if [ -f .env ]; then
+            make clean-local
+          fi
+
+  terraform:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: "1.14.7"
+      - run: make terraform-check

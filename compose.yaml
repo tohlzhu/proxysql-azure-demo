@@ -1,0 +1,132 @@
+name: ${COMPOSE_PROJECT_NAME:-proxysql-demo}
+
+x-app: &app
+  image: proxysql-demo-app:local
+  build:
+    context: .
+    dockerfile: limiter/Dockerfile
+  init: true
+  restart: unless-stopped
+  environment: &app-env
+    DATABASE_PORT: "6033"
+    DATABASE_USER: ${MYSQL_APP_USER:-demo}
+    DATABASE_PASSWORD: ${MYSQL_APP_PASSWORD:?Run scripts/local-up.sh}
+    DATABASE_NAME: ${MYSQL_DATABASE:-ratelimitdemo}
+    DATABASE_TLS: "true"
+    DATABASE_CA: /certs/proxysql-ca.pem
+    REDIS_URL: redis://:${REDIS_PASSWORD:?Run scripts/local-up.sh}@redis:6379/0
+    LIMITER_MODE: ${LIMITER_MODE:-distributed}
+    LIMITER_TARGET_URLS: http://node-1:8080,http://node-2:8080
+    LIMITER_LOAD_URL: http://loadbalancer:8080
+    LIMITER_PUBLIC_URL: http://localhost:${HTTP_PORT:-8080}
+    LIMITER_CONFIG: /app/config/limits.yaml
+    LIMITER_WEB_ROOT: /app/limiter
+  volumes:
+    - ./.local/proxy-tls/proxysql-ca.pem:/certs/proxysql-ca.pem:ro
+  healthcheck:
+    test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8080/readyz', timeout=4)"]
+    interval: 3s
+    timeout: 5s
+    retries: 30
+    start_period: 10s
+
+services:
+  mysql:
+    image: mysql:8.0.41
+    command: ["--require-secure-transport=ON", "--default-authentication-plugin=mysql_native_password"]
+    environment:
+      MYSQL_ROOT_PASSWORD: ${MYSQL_ADMIN_PASSWORD:?Run scripts/local-up.sh}
+      MYSQL_DATABASE: ${MYSQL_DATABASE:-ratelimitdemo}
+      MYSQL_ROOT_HOST: "%"
+    volumes:
+      - mysql-data:/var/lib/mysql
+    healthcheck:
+      test: ["CMD", "mysqladmin", "ping", "--silent"]
+      interval: 3s
+      timeout: 3s
+      retries: 50
+    restart: unless-stopped
+
+  redis:
+    image: redis:7.4.2-alpine
+    environment:
+      REDIS_PASSWORD: ${REDIS_PASSWORD:?Run scripts/local-up.sh}
+      REDISCLI_AUTH: ${REDIS_PASSWORD}
+    command: ["sh", "-c", "exec redis-server --appendonly no --requirepass \"$$REDIS_PASSWORD\""]
+    ports:
+      - "127.0.0.1:${REDIS_PORT:-16379}:6379"
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 3s
+      timeout: 3s
+      retries: 30
+    restart: unless-stopped
+
+  proxysql-1:
+    image: proxysql/proxysql:2.7.3
+    command: ["proxysql", "-f", "--initial", "-c", "/etc/proxysql.cnf"]
+    volumes:
+      - ./.local/proxysql.cnf:/etc/proxysql.cnf:ro
+      - ./.local/certs:/certs:ro
+      - ./.local/proxy-tls/proxysql-ca.pem:/var/lib/proxysql/proxysql-ca.pem:ro
+      - ./.local/proxy-tls/proxysql-cert.pem:/var/lib/proxysql/proxysql-cert.pem:ro
+      - ./.local/proxy-tls/proxysql-key.pem:/var/lib/proxysql/proxysql-key.pem:ro
+    depends_on:
+      mysql:
+        condition: service_healthy
+    restart: unless-stopped
+
+  proxysql-2:
+    image: proxysql/proxysql:2.7.3
+    command: ["proxysql", "-f", "--initial", "-c", "/etc/proxysql.cnf"]
+    volumes:
+      - ./.local/proxysql.cnf:/etc/proxysql.cnf:ro
+      - ./.local/certs:/certs:ro
+      - ./.local/proxy-tls/proxysql-ca.pem:/var/lib/proxysql/proxysql-ca.pem:ro
+      - ./.local/proxy-tls/proxysql-cert.pem:/var/lib/proxysql/proxysql-cert.pem:ro
+      - ./.local/proxy-tls/proxysql-key.pem:/var/lib/proxysql/proxysql-key.pem:ro
+    depends_on:
+      mysql:
+        condition: service_healthy
+    restart: unless-stopped
+
+  node-1:
+    <<: *app
+    environment:
+      <<: *app-env
+      DATABASE_HOST: proxysql-1
+      LIMITER_NODE_ID: node-1
+    depends_on:
+      proxysql-1:
+        condition: service_started
+      redis:
+        condition: service_healthy
+
+  node-2:
+    <<: *app
+    environment:
+      <<: *app-env
+      DATABASE_HOST: proxysql-2
+      LIMITER_NODE_ID: node-2
+    depends_on:
+      proxysql-2:
+        condition: service_started
+      redis:
+        condition: service_healthy
+
+  loadbalancer:
+    image: haproxy:3.0.8-alpine
+    ports:
+      - "127.0.0.1:${HTTP_PORT:-8080}:8080"
+      - "127.0.0.1:16033:6033"
+    volumes:
+      - ./config/haproxy.cfg:/usr/local/etc/haproxy/haproxy.cfg:ro
+    depends_on:
+      node-1:
+        condition: service_healthy
+      node-2:
+        condition: service_healthy
+    restart: unless-stopped
+
+volumes:
+  mysql-data:
