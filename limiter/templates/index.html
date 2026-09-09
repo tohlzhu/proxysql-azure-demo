@@ -1,0 +1,162 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="color-scheme" content="light">
+  <title>SQL 限流实验室 · Azure MySQL / ProxySQL</title>
+  <link rel="stylesheet" href="/static/styles.css">
+  <script src="/static/app.js" defer></script>
+</head>
+<body>
+  <a class="skip-link" href="#main">跳转到控制台</a>
+  <header class="page-header">
+    <div>
+      <p class="eyebrow">AZURE MYSQL / PROXYSQL</p>
+      <h1>SQL 限流实验室</h1>
+      <p class="subtitle">一秒一桶，观察请求如何被接受、排队与拒绝。</p>
+    </div>
+    <span class="badge">有界负载 · 预定义查询</span>
+  </header>
+  <main id="main">
+    <noscript><p class="notice error">控制台需要 JavaScript。请启用后刷新页面；页面不依赖第三方 CDN。</p></noscript>
+    <div id="error-message" class="notice error" role="alert" hidden></div>
+    <div id="storage-message" class="notice" role="status" hidden></div>
+
+    <section class="panel" aria-labelledby="system-title">
+      <div class="section-heading">
+        <h2 id="system-title">01 / 系统状态</h2>
+        <button id="refresh-health" class="secondary" type="button">刷新状态</button>
+      </div>
+      <dl class="system-grid">
+        <div><dt>Load Balancer / 配置入口</dt><dd id="public-url">正在读取…</dd></div>
+        <div><dt>当前浏览器入口</dt><dd id="browser-origin">—</dd></div>
+        <div><dt>最近一次配置请求的服务节点</dt><dd id="serving-node">—</dd></div>
+        <div><dt>服务默认限流模式</dt><dd id="backend-mode">—</dd></div>
+      </dl>
+      <p class="hint">统一入口不是节点标识；负载均衡可能把后续请求分配给其他节点。节点状态来自服务端心跳，不代表本浏览器直连探测。</p>
+      <div id="node-health" class="node-grid"></div>
+      <p id="health-updated" class="hint" role="status">等待服务端配置。状态每 15 秒刷新。</p>
+    </section>
+
+    <section class="panel" aria-labelledby="controls-title">
+      <div class="section-heading">
+        <h2 id="controls-title">02 / 场景控制</h2>
+        <span id="limit-config" class="hint">正在加载安全边界…</span>
+      </div>
+      <form id="run-form">
+        <fieldset id="run-controls" disabled>
+          <legend class="sr-only">选择预定义场景及有界负载参数</legend>
+          <div class="control-grid">
+            <div class="field scenario-field">
+              <label for="scenario">预置场景</label>
+              <select id="scenario" name="scenario_id" aria-describedby="expected scenario-note" required>
+                <option value="">正在加载场景…</option>
+              </select>
+            </div>
+            <div class="field">
+              <label for="mode">本次运行模式</label>
+              <select id="mode" name="limiter_mode" aria-describedby="mode-note">
+                <option value="local">local · 每节点独立</option>
+                <option value="distributed">distributed · 全局共享</option>
+              </select>
+            </div>
+            <div class="field">
+              <label for="duration">持续时间（秒）</label>
+              <input id="duration" name="duration_seconds" type="number" step="1" inputmode="numeric" required aria-describedby="duration-bound">
+              <small id="duration-bound"></small>
+            </div>
+            <div class="field">
+              <label for="qps">目标请求速率（请求/秒）</label>
+              <input id="qps" name="qps" type="number" step="1" inputmode="numeric" required aria-describedby="qps-bound">
+              <small id="qps-bound"></small>
+            </div>
+            <div class="field">
+              <label for="concurrency">客户端并发上限（请求）</label>
+              <input id="concurrency" name="concurrency" type="number" step="1" inputmode="numeric" required aria-describedby="concurrency-bound">
+              <small id="concurrency-bound"></small>
+            </div>
+          </div>
+        </fieldset>
+        <p id="scenario-note" class="hint">切换场景会应用服务端默认参数；所有输入受服务端发布的安全边界约束。</p>
+        <p id="mode-note" class="hint">local 的总配额可能随节点数放大；distributed 依赖 Redis 共享配额。切换此处只影响新运行，不修改服务默认配置。</p>
+        <div class="expectation"><strong>场景预期</strong><p id="expected">选择场景后显示服务端预期。</p></div>
+        <p id="fault-note" class="hint">节点故障转移默认禁用：未授予管理授权时，不提供停止服务或其他故障注入动作。</p>
+        <div class="actions">
+          <button id="start-run" type="submit" disabled>开始运行</button>
+          <button id="cancel-run" class="danger secondary" type="button" disabled>取消运行</button>
+          <button id="download-run" class="secondary" type="button" disabled>下载 JSON</button>
+        </div>
+        <p class="hint">本页面可触发真实数据库负载，仅面向可信演示者；不能输入任意 URL、SQL 或命令。</p>
+      </form>
+    </section>
+
+    <section class="panel" aria-labelledby="results-title">
+      <div class="section-heading">
+        <h2 id="results-title">03 / 实测结果</h2>
+        <div class="run-indicator"><span id="run-status" class="badge" role="status" aria-live="polite">idle · 尚未运行</span></div>
+      </div>
+      <p id="connection-status" class="hint" role="status">启动场景后接收实时快照。</p>
+      <div class="metric-grid">
+        <div class="metric"><span>总请求</span><strong id="total-requests">0</strong><small>请求</small></div>
+        <div class="metric accepted"><span>成功 · 200</span><strong id="success-count">0</strong><small id="success-rate">成功率 —</small></div>
+        <div class="metric rejected"><span>限流拒绝 · 429</span><strong id="rejected-count">0</strong><small id="rate-limit-rate">限流率 —</small></div>
+        <div class="metric unavailable"><span>服务不可用 / 传输失败</span><strong id="unavailable-count">0</strong><small id="unavailable-detail">含 5xx / 未收到 HTTP 响应，不计为限流拒绝</small></div>
+      </div>
+      <div class="comparison-grid">
+        <div class="expectation"><strong>本次运行预期</strong><p id="run-expected">—</p></div>
+        <div class="expectation"><strong>实测解读</strong><p id="measured">尚无数据。以服务端状态码和原始结果为准，不根据图形推断验收成功。</p></div>
+      </div>
+      <dl class="detail-grid">
+        <div><dt>运行 ID</dt><dd id="run-id">—</dd></div>
+        <div><dt>场景 / 模式</dt><dd id="run-scenario">—</dd></div>
+        <div><dt>实际运行参数</dt><dd id="run-parameters">—</dd></div>
+        <div><dt>开始时间</dt><dd id="started-at">—</dd></div>
+        <div><dt>结束时间</dt><dd id="finished-at">—</dd></div>
+        <div><dt>客户端峰值并发</dt><dd id="peak-concurrency">—</dd></div>
+        <div><dt>SQL 执行阶段峰值（响应采样）</dt><dd id="peak-sql-concurrency">—</dd></div>
+        <div><dt>全程延迟 P50 / P95 / P99</dt><dd id="latency-summary">—</dd></div>
+        <div><dt>恢复时间</dt><dd id="recovery-time">—</dd></div>
+        <div><dt>短暂失败数</dt><dd id="transient-failures">—</dd></div>
+      </dl>
+      <p id="concurrency-note" class="hint">并发曲线为每秒客户端在途请求峰值（含等待），不等于 SQL 正在执行数。当前 SQL 执行并发：此结果 API 未提供；不能用客户端并发或 ProxySQL 连接数代替。</p>
+      <div class="breakdown-grid">
+        <div><h3>状态码 · 请求数</h3><ul id="status-codes" class="data-list"><li>尚无数据</li></ul></div>
+        <div><h3>处理节点 · 请求数</h3><ul id="node-counts" class="data-list"><li>尚无数据</li></ul></div>
+        <div><h3>错误原因 · 次数</h3><ul id="error-counts" class="data-list"><li>尚无数据</li></ul></div>
+      </div>
+    </section>
+
+    <section class="panel" aria-labelledby="charts-title">
+      <div class="section-heading"><h2 id="charts-title">04 / 秒级观测</h2><span class="hint">横轴：运行经过时间（秒）· 每桶 1 秒</span></div>
+      <div class="chart-grid">
+        <figure><figcaption>请求吞吐 <span>请求 / 1 秒桶</span></figcaption><div id="requests-chart" class="chart"></div><ul id="requests-legend" class="legend"></ul></figure>
+        <figure><figcaption>客户端在途并发 <span>每秒峰值（请求）· 非 SQL 执行数</span></figcaption><div id="concurrency-chart" class="chart"></div><ul id="concurrency-legend" class="legend"></ul></figure>
+        <figure><figcaption>请求延迟 <span>毫秒（ms）</span></figcaption><div id="latency-chart" class="chart"></div><ul id="latency-legend" class="legend"></ul></figure>
+        <figure><figcaption>各节点处理量 <span>请求 / 1 秒桶</span></figcaption><div id="nodes-chart" class="chart"></div><ul id="nodes-legend" class="legend"></ul></figure>
+      </div>
+      <details id="bucket-details">
+        <summary>查看图表等价数据表（无图形也可读取完整实测值）</summary>
+        <div class="table-scroll" role="region" aria-label="每秒完整数据，可横向滚动" tabindex="0">
+          <table>
+            <caption>每秒快照：计数单位为请求，延迟单位为毫秒。并发为每秒客户端在途请求峰值。不可用包含 5xx 及未收到 HTTP 响应，不等同于 HTTP 503 数量；精确状态码见上方摘要。</caption>
+            <thead><tr><th scope="col">秒</th><th scope="col">总请求</th><th scope="col">成功</th><th scope="col">429</th><th scope="col">不可用 / 传输失败</th><th scope="col">客户端并发峰值</th><th scope="col">P50 ms</th><th scope="col">P95 ms</th><th scope="col">P99 ms</th><th scope="col">节点：请求数</th></tr></thead>
+            <tbody id="bucket-table"><tr><td colspan="10">尚无数据</td></tr></tbody>
+          </table>
+        </div>
+      </details>
+    </section>
+
+    <section class="panel" aria-labelledby="guide-title">
+      <h2 id="guide-title">如何判读这次实验</h2>
+      <div class="guide-grid">
+        <article><h3>QPS ≠ 固定每秒切割</h3><p>令牌桶按速率补充令牌，burst 允许短时突发。因此个别秒桶可能超过标称速率；长期吞吐与 429 更能体现约束。</p></article>
+        <article><h3>并发：先等待，再拒绝</h3><p>同一预定义查询由信号量限制执行并发。排队超过配置的超时时间返回 429（concurrency_limit_exceeded）；数据库或代理不可用才返回 503。请求延迟包含等待，API 未单独提供排队耗时。</p></article>
+        <article><h3>本地计数与全局配额</h3><p>local 每节点独立，双节点的总配额可能放大。distributed 通过 Redis 协调全局约束；请结合节点处理量确认流量确实到达多个节点。Redis 在 Demo 中仍可能是单点。</p></article>
+        <article><h3>不同的故障域</h3><p>ProxySQL 高可用不等于 MySQL HA。ProxySQL 原生规则负责查询治理，精确 QPS / 并发限流由应用代码实现。状态码 0 表示传输失败或客户端取消、未收到 HTTP 响应，不是服务端 503。恢复时间是首次不可用到下一次成功响应的间隔，未观测时为 null。故障场景必须由服务端预定义并经过管理授权，页面不会执行任意命令。</p></article>
+      </div>
+    </section>
+  </main>
+  <footer>同源 Web / API · 无外部脚本 · JSON schema_version: 1</footer>
+</body>
+</html>
